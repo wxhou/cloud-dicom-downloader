@@ -4,7 +4,8 @@ import random
 from datetime import datetime
 from urllib.parse import parse_qsl
 
-from Cryptodome.Cipher import AES
+from Crypto.Cipher import AES
+
 from yarl import URL
 
 from crawlers._utils import new_http_client, SeriesDirectory, tqdme, pkcs7_unpad, suggest_save_dir

@@ -1,6 +1,6 @@
 import urllib.parse
 
-from Cryptodome.Cipher import AES
+from Crypto.Cipher import AES
 from yarl import URL
 
 from crawlers._utils import new_http_client, pkcs7_pad, SeriesDirectory, tqdme, suggest_save_dir
