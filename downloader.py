@@ -6,8 +6,17 @@ from yarl import URL
 from crawlers import szjudianyun, hinacom, cq12320, shdc, zscloud, ftimage, mtywcloud, yzhcloud, sugh, jdyfy, tdcloud
 
 
+
 async def main():
-	host = URL(sys.argv[1]).host
+	# 支持交互式输入：如果没有提供 URL 参数，则提示用户输入
+	if len(sys.argv) > 1 and sys.argv[1].strip():
+		url_arg = sys.argv[1]
+		extra_args = sys.argv[2:]
+	else:
+		url_arg = input("请输入要下载的地址 (例如 https://...): ").strip()
+		extra_args = []
+
+	host = URL(url_arg).host
 
 	if host.endswith(".medicalimagecloud.com"):
 		module_ = hinacom
@@ -34,7 +43,7 @@ async def main():
 	else:
 		return print("不支持的网站，详情见 README.md")
 
-	await module_.run(*sys.argv[1:])
+	await module_.run(url_arg, *extra_args)
 
 
 if __name__ == "__main__":

@@ -31,6 +31,50 @@ def _get_save_dir(ds):
     return suggest_save_dir(ds["patientName"], ds["studyDescription"], ds["studyDate"])
 
 
+def _select_display_sets(display_sets: list):
+    """
+    交互式选择要下载的 displaySets。
+    支持：空回车（全部）、all、逗号分隔索引（从1开始）、范围 1-3
+    返回所选的 displaySets 列表（原始对象引用）。
+    """
+    if not display_sets:
+        return []
+
+    print("发现以下序列：")
+    for idx, s in enumerate(display_sets, start=1):
+        desc = s.get("description") or "Unnamed"
+        num = s.get("seriesNumber")
+        count = len(s.get("images", []))
+        print(f"  {idx}. [{num}] {desc}  ({count} 张)")
+
+    choice = input("选择要下载的序列（回车全部，支持 1,3 或 1-3 范围）: ").strip()
+    if not choice or choice.lower() == "all":
+        return display_sets
+
+    picks = set()
+    parts = [p.strip() for p in choice.split(",") if p.strip()]
+    for part in parts:
+        if "-" in part:
+            try:
+                a, b = part.split("-", 1)
+                a, b = int(a), int(b)
+                for i in range(min(a, b), max(a, b) + 1):
+                    picks.add(i - 1)
+            except Exception:
+                pass
+        else:
+            try:
+                picks.add(int(part) - 1)
+            except Exception:
+                pass
+
+    selected = [display_sets[i] for i in sorted(picks) if 0 <= i < len(display_sets)]
+    if not selected:
+        print("未识别有效选择，默认全部。")
+        return display_sets
+    return selected
+
+
 class TdCloudDownloader:
     """
     TdCloud 医疗影像系统的下载器
@@ -94,8 +138,13 @@ class TdCloudDownloader:
         save_to = _get_save_dir(self.dataset)
         print(f'保存到: {save_to}')
 
-        for series in self.dataset["displaySets"]:
-            name, no, images = pathify(series["description"]) or "Unnamed", series["seriesNumber"], series["images"]
+        display_sets = self.dataset.get("displaySets", [])
+        chosen = _select_display_sets(display_sets)
+
+        for series in chosen:
+            name = pathify(series.get("description") or "") or "Unnamed"
+            no = series.get("seriesNumber")
+            images = series.get("images", [])
             dir_ = SeriesDirectory(save_to, no, name, len(images))
 
             tasks = tqdm(images, desc=name, unit="张", file=sys.stdout)
@@ -182,6 +231,10 @@ class TdCloudPlaywrightCrawler(PlaywrightCrawler):
         max_wait = 600  # seconds (延长到 10 分钟)
         interval = 1.0  # 轮询间隔改为 1 秒，减少频繁 evaluate
         waited = 0.0
+        # 预先定义变量，避免后续引用未定义导致 NameError
+        study_id = ""
+        accession_number = ""
+        exam_uid = ""
         try:
             print("等待新标签页打开（尝试自动点击页面上的“查看影像”，如果不存在则等待用户手动打开）...")
             try:
@@ -357,7 +410,10 @@ class TdCloudPlaywrightCrawler(PlaywrightCrawler):
             save_to = _get_save_dir(image_set)
             print(f'保存到: {save_to}')
 
-            for series in image_set.get("displaySets", []):
+            display_sets = image_set.get("displaySets", [])
+            chosen = _select_display_sets(display_sets)
+
+            for series in chosen:
                 name, no, images = pathify(series.get("description") or "" ) or "Unnamed", series.get("seriesNumber"), series.get("images", [])
                 dir_ = SeriesDirectory(save_to, no, name, len(images))
 
