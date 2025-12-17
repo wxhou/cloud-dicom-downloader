@@ -27,17 +27,19 @@
 ```
 可以通过阅片软件或在线阅片网站来查看下载的文件，打开时选择某个序列或整个检查的文件夹即可。
 
-* [使用步骤](#使用步骤)
-* [支持的站点](#支持的站点)
-  * [medicalimagecloud.com](#medicalimagecloudcom)
-  * [mdmis.cq12320.cn](#mdmiscq12320cn)
-  * [ylyyx.shdc.org.cn](#ylyyxshdcorgcn)
-  * [zscloud.zs-hospital.sh.cn](#zs-hospitalshcn)
-  * [ftimage.cn](#ftimagecn)
-  * [qr.szjudianyun.com](#qrszjudianyuncom)
-  * [ss.mtywcloud.com](#ssmtywcloudcom)
-  * [m.yzhcloud.com](#myzhcloudcom)
-  * [work.sugh.net](#worksughnet)
+- [cloud-dicom-downloader](#cloud-dicom-downloader)
+  - [使用步骤](#使用步骤)
+  - [支持的站点](#支持的站点)
+    - [medicalimagecloud.com](#medicalimagecloudcom)
+    - [mdmis.cq12320.cn](#mdmiscq12320cn)
+    - [ylyyx.shdc.org.cn](#ylyyxshdcorgcn)
+    - [zs-hospital.sh.cn](#zs-hospitalshcn)
+    - [ftimage.cn](#ftimagecn)
+    - [qr.szjudianyun.com](#qrszjudianyuncom)
+    - [ss.mtywcloud.com](#ssmtywcloudcom)
+    - [m.yzhcloud.com](#myzhcloudcom)
+    - [work.sugh.net](#worksughnet)
+  - [打包为可执行文件](#打包为可执行文件)
 
 ## 使用步骤
 
@@ -134,3 +136,29 @@ URL 格式为`https://work.sugh.net:8002/pc/auth-viewer?clinicalShareToken=<toke
 ```
 python downloader.py <url>
 ```
+
+## 打包为可执行文件
+
+如果你希望把脚本打包为单个 Windows 可执行文件（方便在没有 Python 的机器上运行），可以使用 `PyInstaller`。
+
+- 安装（在 `dicom` 环境或你自己选择的环境中）：
+```bash
+conda install -n dicom -c conda-forge pyinstaller
+# 或者在环境激活后使用 pip
+conda run -n dicom pip install pyinstaller
+```
+
+- 在项目根目录运行打包命令：
+```bash
+conda run -n dicom pyinstaller --onefile --name cloud-dicom-downloader downloader.py
+```
+
+- 生成的单文件可执行程序位于：
+  - `dist/cloud-dicom-downloader.exe`
+
+- 运行方式与 Python 脚本相同：
+```bash
+dist\cloud-dicom-downloader.exe "<report_url>" --debug
+```
+
+如果运行时提示缺少某些模块，请把可执行文件在命令行中运行并把报错粘贴出来，我会协助添加 PyInstaller 的 `--hidden-import` 或调整 spec 文件以包含缺失的模块。
