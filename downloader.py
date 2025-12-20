@@ -3,7 +3,7 @@ import sys
 
 from yarl import URL
 
-from crawlers import szjudianyun, hinacom, cq12320, shdc, zscloud, ftimage, mtywcloud, yzhcloud, sugh, jdyfy, tdcloud
+from crawlers import szjudianyun, hinacom, cq12320, shdc, zscloud, ftimage, mtywcloud, yzhcloud, sugh, jdyfy, tdcloud, xa_data
 
 
 
@@ -40,6 +40,8 @@ async def main():
 		module_ = jdyfy
 	elif host == "tdcloudjp.fmmu.edu.cn":
 		module_ = tdcloud
+	elif host == "yxy.xa-data.cn":
+		module_ = xa_data
 	else:
 		return print("不支持的网站，详情见 README.md")
 
