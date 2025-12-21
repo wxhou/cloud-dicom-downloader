@@ -10,18 +10,200 @@
 实现尽量复用 tdcloud 的请求/写入逻辑（适配性更强）。
 """
 import asyncio
-import time
+import base64
 import json
+import time
+from typing import Any, List, Optional, Tuple
 from urllib.parse import urlencode
-from typing import Any
 
 from aiohttp import ClientSession
+from pydicom._dicom_dict import DicomDictionary
+from pydicom.dataset import Dataset, FileMetaDataset
+from pydicom.encaps import encapsulate
+from pydicom.tag import Tag
+from pydicom.uid import ExplicitVRLittleEndian, JPEG2000Lossless
 from yarl import URL
 
+
 from crawlers._browser import PlaywrightCrawler, run_with_browser
-from crawlers._utils import new_http_client, pathify, SeriesDirectory, suggest_save_dir, parse_dcm_value
-from crawlers import tdcloud
-from crawlers.xa_helpers import normalize_images_field, fetch_image_bytes, build_minimal_tags
+from crawlers._utils import new_http_client, parse_dcm_value, pathify, SeriesDirectory, suggest_save_dir
+
+
+def normalize_images_field(raw: Any) -> List[Any]:
+    """Return a normalized list of image entries (strings or dicts)."""
+    res = []
+    if raw is None:
+        return res
+    if isinstance(raw, list):
+        for it in raw:
+            if isinstance(it, (str, dict)):
+                res.append(it)
+        return res
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict) and parsed.get('arrayValue'):
+                for entry in parsed.get('arrayValue', []):
+                    if isinstance(entry, str):
+                        try:
+                            inner = json.loads(entry)
+                            if isinstance(inner, list):
+                                for item in inner:
+                                    res.append(item)
+                            elif isinstance(inner, dict):
+                                res.append(inner)
+                            else:
+                                res.append(entry)
+                        except Exception:
+                            res.append(entry)
+                    else:
+                        res.append(entry)
+            elif isinstance(parsed, list):
+                for item in parsed:
+                    res.append(item)
+            else:
+                res.append(raw)
+        except Exception:
+            res.append(raw)
+    return res
+
+
+async def fetch_image_bytes(page_for_eval, client, origin: str, info: Any) -> Tuple[Optional[bytes], Optional[str]]:
+    """Try to fetch image bytes using the browser (same-origin) then aiohttp fallback.
+
+    Returns (img_bytes or None, abs_url or None).
+    """
+    img_bytes = None
+    abs_url = None
+    try:
+        if isinstance(info, str) and info.startswith('PK:'):
+            oss = info.split(':', 1)[1].lstrip('/')
+            abs_url = str(origin) + '/' + oss.lstrip('/')
+            try:
+                js = (
+                    "async (url) => { const r = await fetch(url, {credentials: 'same-origin'});"
+                    " if(!r.ok) throw new Error('fetch failed ' + r.status); const buf = await r.arrayBuffer();"
+                    " const bytes = new Uint8Array(buf); let binary = ''; const chunk = 0x8000;"
+                    " for(let i=0;i<bytes.length;i+=chunk){ binary += String.fromCharCode.apply(null, Array.from(bytes.subarray(i,i+chunk))); }"
+                    " return btoa(binary); }"
+                )
+                b64 = await page_for_eval.evaluate(js, abs_url)
+                img_bytes = base64.b64decode(b64)
+            except Exception:
+                img_bytes = None
+        elif isinstance(info, dict):
+            oss = info.get('ossKey') or info.get('file') or info.get('fileHash')
+            if oss:
+                abs_url = str(origin) + '/' + str(oss).lstrip('/')
+                try:
+                    js = (
+                        "async (url) => { const r = await fetch(url, {credentials: 'same-origin'});"
+                        " if(!r.ok) throw new Error('fetch failed ' + r.status); const buf = await r.arrayBuffer();"
+                        " const bytes = new Uint8Array(buf); let binary = ''; const chunk = 0x8000;"
+                        " for(let i=0;i<bytes.length;i+=chunk){ binary += String.fromCharCode.apply(null, Array.from(bytes.subarray(i,i+chunk))); }"
+                        " return btoa(binary); }"
+                    )
+                    b64 = await page_for_eval.evaluate(js, abs_url)
+                    img_bytes = base64.b64decode(b64)
+                except Exception:
+                    img_bytes = None
+    except Exception:
+        pass
+
+    # aiohttp fallback if browser fetch failed
+    if img_bytes is None and abs_url:
+        try:
+            async with client.get(abs_url) as resp:
+                data = await resp.read()
+                if data and (data.startswith(b'{') or data.startswith(b'[')):
+                    try:
+                        txt = data.decode('utf-8', errors='ignore')
+                        j = json.loads(txt)
+                        if isinstance(j, dict):
+                            b64_val = j.get('b64')
+                            if b64_val:
+                                img_bytes = base64.b64decode(b64_val)
+                    except Exception:
+                        pass
+                else:
+                    img_bytes = data
+        except Exception:
+            img_bytes = None
+
+    return img_bytes, abs_url
+
+
+def build_minimal_tags(info: Any) -> List[dict]:
+    tags = []
+    try:
+        if isinstance(info, dict):
+            if info.get('sopClassUid'):
+                tags.append({'tag': '0008,0016', 'value': info.get('sopClassUid')})
+            if info.get('instanceUid'):
+                tags.append({'tag': '0008,0018', 'value': info.get('instanceUid')})
+            if info.get('rows'):
+                tags.append({'tag': '0028,0010', 'value': str(info.get('rows'))})
+            if info.get('columns'):
+                tags.append({'tag': '0028,0011', 'value': str(info.get('columns'))})
+    except Exception:
+        pass
+
+    # xa-data API 不提供完整标签，为基本DICOM文件提供最小必需标签
+    if not any(tag['tag'] == '0008,0016' for tag in tags):
+        tags.append({'tag': '0008,0016', 'value': '1.2.840.10008.5.1.4.1.1.2'})  # CT Image Storage
+    if not any(tag['tag'] == '0008,0018' for tag in tags):
+        tags.append({'tag': '0008,0018', 'value': '1.2.3.4.5.6.7.8'})  # SOP Instance UID
+    if not any(tag['tag'] == '0028,0010' for tag in tags):
+        tags.append({'tag': '0028,0010', 'value': '512'})  # Rows
+    if not any(tag['tag'] == '0028,0011' for tag in tags):
+        tags.append({'tag': '0028,0011', 'value': '512'})  # Columns
+
+    # 其他必需标签
+    tags.append({'tag': '0028,0100', 'value': '16'})  # Bits Allocated
+    tags.append({'tag': '0028,0002', 'value': '1'})   # Samples per Pixel
+    tags.append({'tag': '0028,0004', 'value': 'MONOCHROME2'})  # Photometric Interpretation
+    return tags
+
+
+def _write_dicom(tag_list: list, image: bytes, filename):
+    ds = Dataset()
+    ds.file_meta = FileMetaDataset()
+
+    # GetImageDicomTags 的响应不含 VR，故私有标签只能假设为 LO 类型。
+    for item in tag_list:
+        tag = Tag(item["tag"].split(",", 2))
+        definition = DicomDictionary.get(tag)
+
+        if tag.group == 2:
+            # 0002 的标签只能放在 file_meta 里而不能在 ds 中存在。
+            if definition:
+                vr, key = definition[0], definition[4]
+                value = parse_dcm_value(item["value"], vr)
+                setattr(ds.file_meta, key, value)
+        elif definition:
+            vr, key = definition[0], definition[4]
+            setattr(ds, key, parse_dcm_value(item["value"], vr))
+        else:
+            # 正好 PrivateCreator 出现在它的标签之前，按顺序添加即可。
+            # DataElement 对 LO 类型会自动按斜杠分割多值字符串。
+            ds.add_new(tag, "LO", item["value"])
+
+    # Set MediaStorageSOPClassUID and MediaStorageSOPInstanceUID if available
+    if hasattr(ds, 'SOPClassUID'):
+        ds.file_meta.MediaStorageSOPClassUID = ds.SOPClassUID
+    if hasattr(ds, 'SOPInstanceUID'):
+        ds.file_meta.MediaStorageSOPInstanceUID = ds.SOPInstanceUID
+
+    # 根据文件体积和头部自动判断类型。
+    px_size = (ds.BitsAllocated + 7) // 8 * ds.Rows * ds.Columns
+    if image[16:23] == b"ftypjp2" and len(image) != px_size:
+        ds.PixelData = encapsulate([image])
+        ds.file_meta.TransferSyntaxUID = JPEG2000Lossless
+    else:
+        ds.PixelData = image
+        ds.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+
+    ds.save_as(filename, enforce_file_format=True)
 
 
 class XaDataPlaywrightCrawler(PlaywrightCrawler):
@@ -197,9 +379,7 @@ class XaDataPlaywrightCrawler(PlaywrightCrawler):
                 image_set = None
 
         if image_set is None:
-            # 最后尝试让 tdcloud 的通用解析去处理（如果结构兼容）
-            print('未直接获取到 image_set，尝试使用 tdcloud 的通用解析作为回退')
-            await tdcloud.run(self.report_url)
+            print('未获取到 image_set，无法继续下载')
             await client.close()
             return
 
@@ -270,11 +450,8 @@ class XaDataPlaywrightCrawler(PlaywrightCrawler):
 
         # 使用 helpers.normalize_images_field
 
-        from pydicom import Dataset
-        import base64
         from pathlib import Path
         from tqdm import tqdm
-        from crawlers.tdcloud import _write_dicom
 
         try:
             # 调试：打印前几个 series 的原始结构，帮助分析为何 description 为空

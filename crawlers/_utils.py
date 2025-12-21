@@ -13,6 +13,9 @@ from pydicom import Dataset
 from pydicom.tag import Tag
 from pydicom.valuerep import VR, STR_VR, INT_VR, FLOAT_VR
 from tqdm import tqdm
+from tools.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 # 这儿的请求头也就意思一下，真要处理请求特征反爬还得使用自动化浏览器。
 _HEADERS = {
@@ -31,8 +34,13 @@ async def _dump_response_check(response: aiohttp.ClientResponse):
 	if response.ok:
 		return
 
+	logger.error(f"HTTP响应错误: {response.status} {response.reason} for {response.url}")
+	
 	with ZipFile('dump.zip', 'w') as pack:
-		a, b = response.version
+		if response.version:
+			a, b = response.version
+		else:
+			a, b = 1, 1  # 默认HTTP版本
 
 		with TextIOWrapper(pack.open("request.headers", "w")) as fp:
 			fp.write(f"{response.method} {response.url.path_qs} HTTP{a}/{b}")
@@ -50,7 +58,7 @@ async def _dump_response_check(response: aiohttp.ClientResponse):
 			async for chunk in response.content.iter_chunked(16384):
 				fp.write(chunk)
 
-	print("响应已转储到 dump.zip", file=sys.stderr)
+	logger.error("响应已转储到 dump.zip")
 
 	response.raise_for_status()  # 继续 aiohttp 内置的处理，让调用端保持一致。
 
@@ -66,6 +74,7 @@ def new_http_client(*args, **kwargs):
 	# 使用 quote_cookie=False 避免对包含特殊字符的 cookie 值进行引号处理
 	kwargs.setdefault("cookie_jar", aiohttp.CookieJar(quote_cookie=False))
 
+	logger.debug(f"创建HTTP客户端，参数: {kwargs}")
 	return aiohttp.ClientSession(*args, **kwargs)
 
 
@@ -75,6 +84,7 @@ def tqdme(*args, **kwargs):
 	"""
 	kwargs.setdefault("file", sys.stdout)
 	kwargs.setdefault("unit", "张")
+	logger.debug(f"创建tqdm进度条，参数: {kwargs}")
 	return enumerate(tqdm(*args, **kwargs))
 
 
@@ -90,7 +100,7 @@ def pkcs7_pad(data: bytes):
 _illegal_path_chars = re.compile(r'[<>:"/\\?*|]')
 
 
-def _to_full_width(match: re.Match[str]):
+def _to_full_width(match: re.Match[str]) -> str:
 	# 一堆 if 用时 2.54s，跟从 dict 取用时 2.23s 差不多。
 	char = match[0]
 	if char == ":": return "："
@@ -102,6 +112,7 @@ def _to_full_width(match: re.Match[str]):
 	if char == '>': return "＞"
 	if char == "/": return "／"
 	if char == "\\": return "＼"
+	return char  # 默认返回原字符
 
 
 def pathify(text: str):
@@ -142,6 +153,7 @@ def make_unique_dir(path: Path):
 	"""
 	try:
 		path.mkdir(parents=True, exist_ok=False)
+		logger.debug(f"创建目录: {path}")
 		return path
 	except OSError:
 		if not path.is_dir():
@@ -152,7 +164,8 @@ def make_unique_dir(path: Path):
 			alt = f"{matches.group(1)} ({n})"
 		else:
 			alt = f"{path.name} (1)"
-
+		
+		logger.debug(f"目录已存在，创建唯一目录: {path.parent / alt}")
 		return make_unique_dir(path.parent / alt)
 
 
@@ -188,6 +201,7 @@ class SeriesDirectory:
 		else:
 			self._path = self._suggested
 			self._path.mkdir(parents=True, exist_ok=True)
+		logger.debug(f"创建序列目录: {self._path}")
 
 	def get(self, index: int, extension: str) -> Path:
 		"""
@@ -202,9 +216,15 @@ class SeriesDirectory:
 		"""
 		if not self._path:
 			self.make_dir()
+		
+		if not self._path:
+			raise RuntimeError("目录路径未正确设置")
+		
 		base = f"{index + 1}.{extension}"
 		width = self._width + len(extension)
-		return self._path / base.zfill(width)
+		file_path = self._path / base.zfill(width)
+		logger.debug(f"生成文件路径: {file_path}")
+		return file_path
 
 
 def parse_dcm_value(value: str, vr: str):

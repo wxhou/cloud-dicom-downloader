@@ -4,3 +4,4 @@ tqdm~=4.67
 yarl~=1.20
 pycryptodomex~=3.23
 pydicom~=3.0
+loguru~=0.7
