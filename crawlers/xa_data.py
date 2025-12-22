@@ -27,6 +27,148 @@ from yarl import URL
 
 from crawlers._browser import PlaywrightCrawler, run_with_browser
 from crawlers._utils import new_http_client, parse_dcm_value, pathify, SeriesDirectory, suggest_save_dir
+import re
+
+
+def extract_patient_info_from_page(page) -> dict:
+    """从页面DOM元素中提取患者和检查信息"""
+    patient_info = {}
+    
+    try:
+        # 提取患者ID (通常显示为 ID:0000030551)
+        try:
+            id_element = page.query_selector('text=/ID:\d+/')
+            if id_element:
+                id_text = id_element.text_content()
+                id_match = re.search(r'ID:(\d+)', id_text)
+                if id_match:
+                    patient_info['patient_id'] = id_match.group(1)
+        except Exception:
+            pass
+        
+        # 提取年龄和性别 (显示为 076Y / F)
+        try:
+            age_element = page.query_selector('text=/\d+Y\s*\/\s*[MF]/')
+            if age_element:
+                age_text = age_element.text_content()
+                age_match = re.search(r'(\d+)Y\s*\/\s*([MF])', age_text)
+                if age_match:
+                    patient_info['age'] = age_match.group(1)
+                    patient_info['sex'] = age_match.group(2)
+        except Exception:
+            pass
+        
+        # 提取序列号 (显示为 Se:101)
+        try:
+            series_element = page.query_selector('text=/Se:\d+/')
+            if series_element:
+                series_text = series_element.text_content()
+                series_match = re.search(r'Se:(\d+)', series_text)
+                if series_match:
+                    patient_info['series_number'] = series_match.group(1)
+        except Exception:
+            pass
+        
+        # 提取图像编号 (显示为 Im:1)
+        try:
+            image_element = page.query_selector('text=/Im:\d+/')
+            if image_element:
+                image_text = image_element.text_content()
+                image_match = re.search(r'Im:(\d+)', image_text)
+                if image_match:
+                    patient_info['image_number'] = image_match.group(1)
+        except Exception:
+            pass
+        
+        # 提取检查日期 (显示为 2025-11-27)
+        try:
+            date_element = page.query_selector('text=/\d{4}-\d{2}-\d{2}/')
+            if date_element:
+                date_text = date_element.text_content()
+                date_match = re.search(r'(\d{4}-\d{2}-\d{2})', date_text)
+                if date_match:
+                    patient_info['study_date'] = date_match.group(1)
+        except Exception:
+            pass
+        
+        # 提取检查时间 (显示为 10:39:08)
+        try:
+            time_element = page.query_selector('text=/\d{2}:\d{2}:\d{2}/')
+            if time_element:
+                time_text = time_element.text_content()
+                time_match = re.search(r'(\d{2}:\d{2}:\d{2})', time_text)
+                if time_match:
+                    patient_info['study_time'] = time_match.group(1).replace(':', '')
+        except Exception:
+            pass
+        
+        # 提取设备信息 (显示为 uCT 780)
+        try:
+            device_element = page.query_selector('text=/uCT\s+\d+/')
+            if device_element:
+                device_text = device_element.text_content()
+                patient_info['device'] = device_text.strip()
+        except Exception:
+            pass
+        
+        # 提取扫描参数
+        try:
+            # 管电压 (显示为 kV:120.00)
+            kv_element = page.query_selector('text=/kV:[\d.]+/')
+            if kv_element:
+                kv_text = kv_element.text_content()
+                kv_match = re.search(r'kV:([\d.]+)', kv_text)
+                if kv_match:
+                    patient_info['kv'] = kv_match.group(1)
+            
+            # 管电流 (显示为 mA:38)
+            ma_element = page.query_selector('text=/mA:\d+/')
+            if ma_element:
+                ma_text = ma_element.text_content()
+                ma_match = re.search(r'mA:(\d+)', ma_text)
+                if ma_match:
+                    patient_info['ma'] = ma_match.group(1)
+        except Exception:
+            pass
+        
+        # 提取窗口设置
+        try:
+            # 窗宽 (显示为 WW:145)
+            ww_element = page.query_selector('text=/WW:\d+/')
+            if ww_element:
+                ww_text = ww_element.text_content()
+                ww_match = re.search(r'WW:(\d+)', ww_text)
+                if ww_match:
+                    patient_info['window_width'] = ww_match.group(1)
+            
+            # 窗位 (显示为 WL:-931)
+            wl_element = page.query_selector('text=/WL:-?\d+/')
+            if wl_element:
+                wl_text = wl_element.text_content()
+                wl_match = re.search(r'WL:(-?\d+)', wl_text)
+                if wl_match:
+                    patient_info['window_level'] = wl_match.group(1)
+        except Exception:
+            pass
+        
+        # 提取图像尺寸 (显示为 768x672)
+        try:
+            size_element = page.query_selector('text=/\d+x\d+/')
+            if size_element:
+                size_text = size_element.text_content()
+                size_match = re.search(r'(\d+)x(\d+)', size_text)
+                if size_match:
+                    patient_info['image_width'] = size_match.group(1)
+                    patient_info['image_height'] = size_match.group(2)
+        except Exception:
+            pass
+        
+        print(f"从页面提取的患者信息: {patient_info}")
+        return patient_info
+        
+    except Exception as e:
+        print(f"提取患者信息时出错: {e}")
+        return {}
 
 
 def normalize_images_field(raw: Any) -> List[Any]:
@@ -133,7 +275,7 @@ async def fetch_image_bytes(page_for_eval, client, origin: str, info: Any) -> Tu
     return img_bytes, abs_url
 
 
-def build_minimal_tags(info: Any) -> List[dict]:
+def build_minimal_tags(info: Any, patient_info: dict | None = None) -> List[dict]:
     tags = []
     try:
         if isinstance(info, dict):
@@ -153,21 +295,67 @@ def build_minimal_tags(info: Any) -> List[dict]:
         tags.append({'tag': '0008,0016', 'value': '1.2.840.10008.5.1.4.1.1.2'})  # CT Image Storage
     if not any(tag['tag'] == '0008,0018' for tag in tags):
         tags.append({'tag': '0008,0018', 'value': '1.2.3.4.5.6.7.8'})  # SOP Instance UID
-    if not any(tag['tag'] == '0028,0010' for tag in tags):
-        tags.append({'tag': '0028,0010', 'value': '512'})  # Rows
-    if not any(tag['tag'] == '0028,0011' for tag in tags):
-        tags.append({'tag': '0028,0011', 'value': '512'})  # Columns
+    
+    # 使用页面提取的图像尺寸
+    if patient_info and patient_info.get('image_width') and patient_info.get('image_height'):
+        tags.append({'tag': '0028,0010', 'value': patient_info['image_height']})  # Rows
+        tags.append({'tag': '0028,0011', 'value': patient_info['image_width']})   # Columns
+    else:
+        if not any(tag['tag'] == '0028,0010' for tag in tags):
+            tags.append({'tag': '0028,0010', 'value': '512'})  # Rows
+        if not any(tag['tag'] == '0028,0011' for tag in tags):
+            tags.append({'tag': '0028,0011', 'value': '512'})  # Columns
 
+    # 添加从页面提取的患者信息
+    if patient_info:
+        if patient_info.get('patient_id'):
+            tags.append({'tag': '0010,0020', 'value': patient_info['patient_id']})  # Patient ID
+        
+        if patient_info.get('age'):
+            tags.append({'tag': '0010,1010', 'value': patient_info['age']})  # Patient Age
+        
+        if patient_info.get('sex'):
+            sex_map = {'M': 'M', 'F': 'F'}
+            if patient_info['sex'] in sex_map:
+                tags.append({'tag': '0010,0040', 'value': sex_map[patient_info['sex']]})  # Patient Sex
+        
+        if patient_info.get('series_number'):
+            tags.append({'tag': '0020,0011', 'value': patient_info['series_number']})  # Series Number
+        
+        if patient_info.get('image_number'):
+            tags.append({'tag': '0020,0013', 'value': patient_info['image_number']})  # Instance Number
+        
+        if patient_info.get('study_date'):
+            tags.append({'tag': '0008,0020', 'value': patient_info['study_date'].replace('-', '')})  # Study Date
+        
+        if patient_info.get('study_time'):
+            tags.append({'tag': '0008,0030', 'value': patient_info['study_time']})  # Study Time
+        
+        if patient_info.get('kv'):
+            tags.append({'tag': '0018,0050', 'value': patient_info['kv']})  # Slice Thickness (kV)
+            tags.append({'tag': '0018,0060', 'value': patient_info['kv']})  # KVP
+        
+        if patient_info.get('ma'):
+            tags.append({'tag': '0018,1151', 'value': patient_info['ma']})  # XRay Tube Current
+        
+        if patient_info.get('device'):
+            tags.append({'tag': '0008,0070', 'value': 'UIH'})  # Manufacturer
+            tags.append({'tag': '0008,1090', 'value': patient_info['device']})  # Manufacturer Model Name
+    
     # 其他必需标签
     tags.append({'tag': '0028,0100', 'value': '16'})  # Bits Allocated
     tags.append({'tag': '0028,0002', 'value': '1'})   # Samples per Pixel
     tags.append({'tag': '0028,0004', 'value': 'MONOCHROME2'})  # Photometric Interpretation
+    
     return tags
 
 
-def _write_dicom(tag_list: list, image: bytes, filename):
+def _write_dicom(tag_list: list, image: bytes, filename, patient_info: dict | None = None):
     ds = Dataset()
     ds.file_meta = FileMetaDataset()
+    
+    # 设置字符集以支持中文编码 (放在Dataset中，不是FileMetaDataset中)
+    ds.SpecificCharacterSet = 'ISO_IR 192'  # UTF-8字符集，支持中文
 
     # GetImageDicomTags 的响应不含 VR，故私有标签只能假设为 LO 类型。
     for item in tag_list:
@@ -188,6 +376,22 @@ def _write_dicom(tag_list: list, image: bytes, filename):
             # DataElement 对 LO 类型会自动按斜杠分割多值字符串。
             ds.add_new(tag, "LO", item["value"])
 
+    # 使用页面提取的患者信息补充DICOM文件
+    if patient_info:
+        # 患者姓名从URL或路径提取（如果存在）
+        if patient_info.get('patient_name'):
+            ds.PatientName = patient_info['patient_name']
+        
+        # 设置模态为CT
+        ds.Modality = "CT"
+        
+        # 生成唯一的UID
+        from pydicom.uid import generate_uid
+        if not hasattr(ds, 'StudyInstanceUID') or not ds.StudyInstanceUID:
+            ds.StudyInstanceUID = generate_uid()
+        if not hasattr(ds, 'SeriesInstanceUID') or not ds.SeriesInstanceUID:
+            ds.SeriesInstanceUID = generate_uid()
+    
     # Set MediaStorageSOPClassUID and MediaStorageSOPInstanceUID if available
     if hasattr(ds, 'SOPClassUID'):
         ds.file_meta.MediaStorageSOPClassUID = ds.SOPClassUID
@@ -306,6 +510,9 @@ class XaDataPlaywrightCrawler(PlaywrightCrawler):
 
         page_for_eval = new_page or page
         await page_for_eval.wait_for_load_state('domcontentloaded')
+        
+        # 初始化患者信息为空
+        patient_info = {}
 
         # 已在导航前通过 CDP 应用触摸/设备仿真（如有必要）
 
@@ -431,9 +638,50 @@ class XaDataPlaywrightCrawler(PlaywrightCrawler):
 
         # 使用页面上下文执行后续请求，确保认证一致
         # 下载逻辑（简化版，基于 xa-data 返回的 data.series 结构）
-        patient = image_set.get('data', {}).get('patientname') or image_set.get('patientName') or ''
+        # 提取患者信息
+        if image_set and isinstance(image_set, dict) and 'data' in image_set:
+            api_data = image_set['data']
+            patient_info = {
+                'patient_name': api_data.get('patientname', ''),
+                'patient_id': api_data.get('checkserialnum', ''),
+                'sex': api_data.get('sex', ''),
+                'modality': api_data.get('modality', 'CT')
+            }
+            print(f"从API数据提取患者信息: {patient_info}")
+        
+        # 优先使用从API提取的患者信息
+        patient = patient_info.get('patient_name') or image_set.get('data', {}).get('patientname') or image_set.get('patientName') or ''
+        
+        # 如果患者姓名为空，尝试从URL或其他来源提取
+        if not patient:
+            # 从URL参数中提取可能的患者信息
+            try:
+                url_params = URL(self.report_url).query
+                title = url_params.get('title', '')
+                # 解码URL编码的中文
+                if '%' in title:
+                    import urllib.parse
+                    try:
+                        decoded_title = urllib.parse.unquote(title, encoding='utf-8')
+                        patient = decoded_title.replace('西安市影像云-', '').replace('*', '').strip()
+                    except Exception:
+                        patient = title.replace('西安市影像云-', '').replace('*', '').strip()
+                else:
+                    patient = title.replace('西安市影像云-', '').replace('*', '').strip()
+            except Exception:
+                # 最后的备选方案：使用默认名称
+                patient = '患者' + patient_info.get('patient_id', 'Unknown')
+        
+        # 确保患者姓名不为空
+        if not patient or patient.strip() == '':
+            patient = '患者' + patient_info.get('patient_id', 'Unknown')
+        
+        # 合并从API和页面获取的患者信息
+        if patient_info:
+            patient_info['patient_name'] = patient
+        
         desc = ''
-        study_date = ''
+        study_date = patient_info.get('study_date', '') or ''
         save_to = suggest_save_dir(patient, desc, study_date)
         print(f'保存到: {save_to}')
 
@@ -493,7 +741,7 @@ class XaDataPlaywrightCrawler(PlaywrightCrawler):
 
                     try:
                         img_bytes, abs_url = await fetch_image_bytes(page_for_eval, client, str(origin), info)
-                        tags = build_minimal_tags(info)
+                        tags = build_minimal_tags(info, patient_info)
                     except Exception as e:
                         print(f'处理影像条目时出错: {e}')
 
@@ -507,7 +755,7 @@ class XaDataPlaywrightCrawler(PlaywrightCrawler):
                     try:
                         dst = dir_.get(i, 'dcm')
                         print(f'    写入 DICOM 到: {dst}')
-                        _write_dicom(tags, img_bytes, dst)
+                        _write_dicom(tags, img_bytes, dst, patient_info)
                     except Exception as e:
                         print(f"写入 DICOM 时出错: {e}")
 
@@ -530,8 +778,8 @@ async def run(url, *args):
     # 这些参数模拟 iPhone 14 Pro Max 的常见特性：iOS Safari User-Agent、高 DPR、触控能力和移动视口
     iphone_viewport = {"width": 393, "height": 852}
     iphone_user_agent = (
-        "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) "
-        "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1"
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+        "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
     )
     await run_with_browser(
         crawler,

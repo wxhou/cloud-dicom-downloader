@@ -1,6 +1,0 @@
-- [x] 读取 xa_helpers.py 的内容
-- [x] 将 xa_helpers.py 中的函数合并到 xa_data.py 中
-- [x] 更新 xa_data.py 中的导入语句
-- [x] 删除 xa_helpers.py 文件
-- [x] 验证合并后的代码符合项目代码风格
-- [x] 测试合并后的 xa_data.py 功能正常

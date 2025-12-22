@@ -31,3 +31,4 @@ htmlcov/
 /dump.zip
 browser_data/
 logs/
+tmp/
