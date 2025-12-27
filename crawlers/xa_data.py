@@ -21,8 +21,26 @@ from pydicom._dicom_dict import DicomDictionary
 from pydicom.dataset import Dataset, FileMetaDataset
 from pydicom.encaps import encapsulate
 from pydicom.tag import Tag
-from pydicom.uid import ExplicitVRLittleEndian, JPEG2000Lossless
+from pydicom.uid import ExplicitVRLittleEndian, UID
 from yarl import URL
+
+# 模态到SOP Class UID映射
+MODALITY_SOP_CLASS_MAP = {
+    'CT': '1.2.840.10008.5.1.4.1.1.2',      # CT Image Storage
+    'MR': '1.2.840.10008.5.1.4.1.1.4',      # MR Image Storage
+    'US': '1.2.840.10008.5.1.4.1.1.6.1',    # Ultrasound Image Storage
+    'CR': '1.2.840.10008.5.1.4.1.1.1',      # Computed Radiography Image Storage
+    'DX': '1.2.840.10008.5.1.4.1.1.1.1.1',  # Digital X-Ray Image Storage
+    'NM': '1.2.840.10008.5.1.4.1.1.20',     # Nuclear Medicine Image Storage
+    'PT': '1.2.840.10008.5.1.4.1.1.128',    # Positron Emission Tomography Image Storage
+    'XA': '1.2.840.10008.5.1.4.1.1.12.1',   # X-Ray Angiography Image Storage
+    'MG': '1.2.840.10008.5.1.4.1.1.1.2.1',  # Digital Mammography Image Storage
+    'RF': '1.2.840.10008.5.1.4.1.1.12.2',   # Radiofluoroscopy Image Storage
+    'SR': '1.2.840.10008.5.1.4.1.1.88.33',  # Comprehensive 3D SR Storage
+    'PR': '1.2.840.10008.5.1.4.1.1.481.2',  # Enhanced MR Image Storage
+    'KO': '1.2.840.10008.5.1.4.1.1.481.1',  # Key Object Selection Storage
+    'OT': '1.2.840.10008.5.1.4.1.1.88.59',  # Segmented Volume Storage
+}
 
 
 from crawlers._browser import PlaywrightCrawler, run_with_browser
@@ -290,11 +308,26 @@ def build_minimal_tags(info: Any, patient_info: dict | None = None) -> List[dict
     except Exception:
         pass
 
-    # xa-data API 不提供完整标签，为基本DICOM文件提供最小必需标签
+    # 动态设置SOP Class UID
+    modality = None
+    if patient_info and patient_info.get('modality'):
+        modality = patient_info['modality']
+    elif isinstance(info, dict) and info.get('modality'):
+        modality = info.get('modality')
+    
+    # 确定SOP Class UID
+    sop_class_uid = None
     if not any(tag['tag'] == '0008,0016' for tag in tags):
-        tags.append({'tag': '0008,0016', 'value': '1.2.840.10008.5.1.4.1.1.2'})  # CT Image Storage
+        if modality and modality.upper() in MODALITY_SOP_CLASS_MAP:
+            sop_class_uid = MODALITY_SOP_CLASS_MAP[modality.upper()]
+        else:
+            # 默认使用CT模态
+            sop_class_uid = '1.2.840.10008.5.1.4.1.1.2'  # CT Image Storage
+        tags.append({'tag': '0008,0016', 'value': sop_class_uid})
+    
+    # 设置SOP Instance UID
     if not any(tag['tag'] == '0008,0018' for tag in tags):
-        tags.append({'tag': '0008,0018', 'value': '1.2.3.4.5.6.7.8'})  # SOP Instance UID
+        tags.append({'tag': '0008,0018', 'value': '1.2.3.4.5.6.7.8.9.10'})  # SOP Instance UID
     
     # 使用页面提取的图像尺寸
     if patient_info and patient_info.get('image_width') and patient_info.get('image_height'):
@@ -346,6 +379,26 @@ def build_minimal_tags(info: Any, patient_info: dict | None = None) -> List[dict
     tags.append({'tag': '0028,0100', 'value': '16'})  # Bits Allocated
     tags.append({'tag': '0028,0002', 'value': '1'})   # Samples per Pixel
     tags.append({'tag': '0028,0004', 'value': 'MONOCHROME2'})  # Photometric Interpretation
+    tags.append({'tag': '0028,0101', 'value': '16'})  # Bits Stored
+    tags.append({'tag': '0028,0102', 'value': '15'})  # High Bit
+    tags.append({'tag': '0028,0103', 'value': '0'})   # Pixel Representation
+    
+    # 添加Study和Series UID（如果从patient_info获取）
+    if patient_info:
+        if patient_info.get('study_instance_uid'):
+            tags.append({'tag': '0020,000D', 'value': patient_info['study_instance_uid']})  # Study Instance UID
+        
+        if patient_info.get('series_instance_uid'):
+            tags.append({'tag': '0020,000E', 'value': patient_info['series_instance_uid']})  # Series Instance UID
+        
+        if patient_info.get('accession_number'):
+            tags.append({'tag': '0008,0050', 'value': patient_info['accession_number']})  # Accession Number
+        
+        if patient_info.get('study_id'):
+            tags.append({'tag': '0020,0010', 'value': patient_info['study_id']})  # Study ID
+        
+        if patient_info.get('patient_birth_date'):
+            tags.append({'tag': '0010,0030', 'value': patient_info['patient_birth_date']})  # Patient Birth Date
     
     return tags
 
@@ -382,8 +435,9 @@ def _write_dicom(tag_list: list, image: bytes, filename, patient_info: dict | No
         if patient_info.get('patient_name'):
             ds.PatientName = patient_info['patient_name']
         
-        # 设置模态为CT
-        ds.Modality = "CT"
+        # 动态设置模态
+        modality = patient_info.get('modality', 'CT')
+        ds.Modality = modality
         
         # 生成唯一的UID
         from pydicom.uid import generate_uid
@@ -392,21 +446,72 @@ def _write_dicom(tag_list: list, image: bytes, filename, patient_info: dict | No
         if not hasattr(ds, 'SeriesInstanceUID') or not ds.SeriesInstanceUID:
             ds.SeriesInstanceUID = generate_uid()
     
-    # Set MediaStorageSOPClassUID and MediaStorageSOPInstanceUID if available
+    # 设置媒体存储SOP类UID和实例UID
     if hasattr(ds, 'SOPClassUID'):
         ds.file_meta.MediaStorageSOPClassUID = ds.SOPClassUID
     if hasattr(ds, 'SOPInstanceUID'):
         ds.file_meta.MediaStorageSOPInstanceUID = ds.SOPInstanceUID
-
-    # 根据文件体积和头部自动判断类型。
-    px_size = (ds.BitsAllocated + 7) // 8 * ds.Rows * ds.Columns
-    if image[16:23] == b"ftypjp2" and len(image) != px_size:
+    
+    # 设置文件元信息
+    from pydicom.uid import generate_uid
+    ds.file_meta.ImplementationClassUID = UID('1.2.826.0.1.3680043.8.498')  # 通用实现UID
+    ds.file_meta.ImplementationVersionName = 'XA-DATA-PYTHON'
+    ds.file_meta.MediaStorageSOPClassUID = UID(ds.file_meta.MediaStorageSOPClassUID or ds.SOPClassUID or '1.2.840.10008.5.1.4.1.1.2')
+    ds.file_meta.MediaStorageSOPInstanceUID = UID(ds.file_meta.MediaStorageSOPInstanceUID or ds.SOPInstanceUID or generate_uid())
+    
+    # 改进的Transfer Syntax UID判断逻辑
+    def _detect_transfer_syntax(img_bytes: bytes, expected_size: int) -> Tuple[str, bool]:
+        """检测Transfer Syntax并返回(UID, 是否压缩)"""
+        # 检测JPEG 2000 (J2K/JP2)
+        if len(img_bytes) >= 2:
+            # JPEG 2000 标记: 0xFF4F 或 0xFF4F
+            if img_bytes[:2] == b'\xff\x4f' or b'\xff\x4f' in img_bytes[:64]:
+                return ('1.2.840.10008.1.2.4.90', True)  # JPEG 2000 Lossless
+            
+            # JPEG 2000 容器 (JP2)
+            if b'ftyp' in img_bytes[:64]:
+                return ('1.2.840.10008.1.2.4.90', True)  # JPEG 2000 Lossless
+        
+        # 检测JPEG
+        if len(img_bytes) >= 4:
+            # JPEG SOI 标记: 0xFFD8
+            if img_bytes[:2] == b'\xff\xd8':
+                # 检查是否为JPEG Baseline (Process 1)
+                if len(img_bytes) > 4 and img_bytes[2:4] in [b'\xff\xe0', b'\xff\xe1', b'\xff\xdb', b'\xff\xc0', b'\xff\xc4']:
+                    return ('1.2.840.10008.1.2.4.50', True)  # JPEG Baseline (Process 1)
+        
+        # 检测JPEG-LS
+        if len(img_bytes) >= 4:
+            # JPEG-LS 标记: 0xFFF7
+            if img_bytes[:2] == b'\xff\xf7':
+                return ('1.2.840.10008.1.2.4.80', True)  # JPEG-LS Lossless
+        
+        # 检测未压缩数据 - 基于文件大小与预期像素数据大小的比较
+        if len(img_bytes) == expected_size:
+            return ('1.2.840.10008.1.2.1', False)  # Explicit VR Little Endian
+        
+        # 默认使用未压缩
+        return ('1.2.840.10008.1.2.1', False)
+    
+    # 计算预期像素数据大小
+    try:
+        px_size = (ds.BitsAllocated + 7) // 8 * ds.Rows * ds.Columns
+        if hasattr(ds, 'SamplesPerPixel') and ds.SamplesPerPixel > 1:
+            px_size *= ds.SamplesPerPixel
+    except Exception:
+        px_size = len(image)  # 如果无法计算，使用实际大小作为默认值
+    
+    # 检测Transfer Syntax
+    transfer_syntax_uid, is_compressed = _detect_transfer_syntax(image, px_size)
+    ds.file_meta.TransferSyntaxUID = UID(transfer_syntax_uid)
+    
+    # 根据Transfer Syntax设置像素数据
+    if is_compressed:
         ds.PixelData = encapsulate([image])
-        ds.file_meta.TransferSyntaxUID = JPEG2000Lossless
     else:
+        # 未压缩数据，确保小端字节序
         ds.PixelData = image
-        ds.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
-
+    
     ds.save_as(filename, enforce_file_format=True)
 
 
@@ -645,7 +750,10 @@ class XaDataPlaywrightCrawler(PlaywrightCrawler):
                 'patient_name': api_data.get('patientname', ''),
                 'patient_id': api_data.get('checkserialnum', ''),
                 'sex': api_data.get('sex', ''),
-                'modality': api_data.get('modality', 'CT')
+                'modality': api_data.get('modality', 'CT'),
+                'study_instance_uid': api_data.get('studyInstanceUID', ''),
+                'accession_number': api_data.get('accessionNumber', ''),
+                'study_id': api_data.get('studyId', ''),
             }
             print(f"从API数据提取患者信息: {patient_info}")
         
@@ -741,6 +849,10 @@ class XaDataPlaywrightCrawler(PlaywrightCrawler):
 
                     try:
                         img_bytes, abs_url = await fetch_image_bytes(page_for_eval, client, str(origin), info)
+                        # 从series中提取series instance UID
+                        series_instance_uid = s.get('seriesInstanceUID') or s.get('seriesUid') or s.get('seriesuid')
+                        if series_instance_uid and patient_info:
+                            patient_info['series_instance_uid'] = series_instance_uid
                         tags = build_minimal_tags(info, patient_info)
                     except Exception as e:
                         print(f'处理影像条目时出错: {e}')
