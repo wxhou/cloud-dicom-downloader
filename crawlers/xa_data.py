@@ -550,9 +550,9 @@ def _write_dicom(tag_list: list, image: bytes, filename, patient_info: dict | No
     else:
         # 检查是否是已经封装的数据（服务器返回的ZIP封装）
         if _is_zip_encapsulated(image):
-            # 数据已经是封装格式，设置正确的 Transfer Syntax
-            ds.file_meta.TransferSyntaxUID = UID('1.2.840.10008.1.2.4.90')  # JPEG 2000 Lossless
-            is_compressed = True
+            # 数据已经是封装格式，使用 Explicit VR Little Endian（不需要额外封装）
+            ds.file_meta.TransferSyntaxUID = UID('1.2.840.10008.1.2.1')  # 未压缩
+            is_compressed = False
             if not hasattr(ds, 'BitsAllocated'): ds.BitsAllocated = 16
             if not hasattr(ds, 'Rows'): ds.Rows = 512
             if not hasattr(ds, 'Columns'): ds.Columns = 512
@@ -570,8 +570,8 @@ def _write_dicom(tag_list: list, image: bytes, filename, patient_info: dict | No
             except:
                 pass
 
-    # 只有当数据不是ZIP封装格式时才封装
-    if is_compressed and not _is_zip_encapsulated(image):
+    # 只有当数据是原始压缩格式时才封装
+    if is_compressed:
         ds.PixelData = encapsulate([image])
     else:
         ds.PixelData = image
