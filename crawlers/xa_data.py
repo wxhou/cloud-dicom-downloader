@@ -510,8 +510,8 @@ def _write_dicom(tag_list: list, image: bytes, filename, patient_info: dict | No
         # ZIP 封装格式通常以 PK 开头 (504B)
         return data[:2] == b'PK' or b'PK' in data[:256]
 
-    def _extract_jpeg2000_from_zip(data: bytes) -> Optional[bytes]:
-        """从ZIP数据中提取JPEG 2000原始数据"""
+    def _extract_from_zip(data: bytes) -> Optional[bytes]:
+        """从ZIP数据中提取内容 - 可能是DICOM文件、JPEG 2000或JPEG数据"""
         try:
             with zipfile.ZipFile(BytesIO(data)) as zf:
                 # 获取ZIP中的文件列表
@@ -519,6 +519,12 @@ def _write_dicom(tag_list: list, image: bytes, filename, patient_info: dict | No
                     # 查找可能包含图像数据的文件
                     if not name.endswith('/'):  # 跳过目录
                         content = zf.read(name)
+                        
+                        # 检查是否是完整的DICOM文件 (以128字节前导+DICM标识)
+                        if len(content) > 132 and content[128:132] == b'DICM':
+                            print(f"  检测到ZIP中包含完整的DICOM文件，直接使用它")
+                            return content
+                        
                         # 检查是否是 JPEG 2000 数据
                         if content.startswith(b'\xff\x4f') or b'ftyp' in content[:64]:
                             return content
@@ -573,13 +579,23 @@ def _write_dicom(tag_list: list, image: bytes, filename, patient_info: dict | No
     else:
         # 检查是否是已经封装的数据（服务器返回的ZIP封装）
         if _is_zip_encapsulated(image):
-            # 从 ZIP 中提取原始 JPEG 2000 数据
-            raw_data = _extract_jpeg2000_from_zip(image)
-            if raw_data.startswith(b'\xff\x4f') or b'ftyp' in raw_data[:64]:
+            # 从 ZIP 中提取内容
+            extracted_data = _extract_from_zip(image)
+            
+            # 检查提取的数据是否是完整的DICOM文件
+            if len(extracted_data) > 132 and extracted_data[128:132] == b'DICM':
+                # 这是一个完整的DICOM文件，直接保存它
+                print(f"  保存从ZIP提取的完整DICOM文件")
+                with open(filename, 'wb') as f:
+                    f.write(extracted_data)
+                return
+            
+            # 否则按照之前的逻辑处理
+            if extracted_data.startswith(b'\xff\x4f') or b'ftyp' in extracted_data[:64]:
                 # JPEG 2000 数据
                 ds.file_meta.TransferSyntaxUID = UID('1.2.840.10008.1.2.4.90')  # JPEG 2000 Lossless
                 is_compressed = True
-                image = raw_data  # 使用提取的原始数据
+                image = extracted_data  # 使用提取的原始数据
             else:
                 # 其他封装数据，使用 Explicit VR Little Endian
                 ds.file_meta.TransferSyntaxUID = UID('1.2.840.10008.1.2.1')
