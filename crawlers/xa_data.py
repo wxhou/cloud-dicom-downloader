@@ -499,6 +499,8 @@ def _write_dicom(tag_list: list, image: bytes, filename, patient_info: dict | No
         ds.SOPInstanceUID = new_uid
         ds.file_meta.MediaStorageSOPInstanceUID = new_uid
 
+    jpeg_info = parse_jpeg_header(image)
+
     def _is_zip_encapsulated(data: bytes) -> bool:
         """检查数据是否已经是ZIP封装格式"""
         if len(data) < 4:
