@@ -14,6 +14,8 @@ import base64
 import json
 import struct
 import time
+import zipfile
+from io import BytesIO
 from typing import Any, List, Optional, Tuple
 from urllib.parse import urlencode
 
@@ -508,6 +510,27 @@ def _write_dicom(tag_list: list, image: bytes, filename, patient_info: dict | No
         # ZIP 封装格式通常以 PK 开头 (504B)
         return data[:2] == b'PK' or b'PK' in data[:256]
 
+    def _extract_jpeg2000_from_zip(data: bytes) -> Optional[bytes]:
+        """从ZIP数据中提取JPEG 2000原始数据"""
+        try:
+            with zipfile.ZipFile(BytesIO(data)) as zf:
+                # 获取ZIP中的文件列表
+                for name in zf.namelist():
+                    # 查找可能包含图像数据的文件
+                    if not name.endswith('/'):  # 跳过目录
+                        content = zf.read(name)
+                        # 检查是否是 JPEG 2000 数据
+                        if content.startswith(b'\xff\x4f') or b'ftyp' in content[:64]:
+                            return content
+                        # 也可能是普通 JPEG
+                        if content.startswith(b'\xff\xd8'):
+                            return content
+            # 如果没找到，返回原始数据
+            return data
+        except Exception as e:
+            # 如果不是有效的ZIP，返回原始数据
+            return data
+
     # 设置Transfer Syntax并决定是否需要封装
     if jpeg_info:
         # JPEG 格式
@@ -550,9 +573,17 @@ def _write_dicom(tag_list: list, image: bytes, filename, patient_info: dict | No
     else:
         # 检查是否是已经封装的数据（服务器返回的ZIP封装）
         if _is_zip_encapsulated(image):
-            # 数据已经是封装格式，使用 Explicit VR Little Endian（不需要额外封装）
-            ds.file_meta.TransferSyntaxUID = UID('1.2.840.10008.1.2.1')  # 未压缩
-            is_compressed = False
+            # 从 ZIP 中提取原始 JPEG 2000 数据
+            raw_data = _extract_jpeg2000_from_zip(image)
+            if raw_data.startswith(b'\xff\x4f') or b'ftyp' in raw_data[:64]:
+                # JPEG 2000 数据
+                ds.file_meta.TransferSyntaxUID = UID('1.2.840.10008.1.2.4.90')  # JPEG 2000 Lossless
+                is_compressed = True
+                image = raw_data  # 使用提取的原始数据
+            else:
+                # 其他封装数据，使用 Explicit VR Little Endian
+                ds.file_meta.TransferSyntaxUID = UID('1.2.840.10008.1.2.1')
+                is_compressed = False
             if not hasattr(ds, 'BitsAllocated'): ds.BitsAllocated = 16
             if not hasattr(ds, 'Rows'): ds.Rows = 512
             if not hasattr(ds, 'Columns'): ds.Columns = 512
