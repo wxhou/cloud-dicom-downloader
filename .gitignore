@@ -32,3 +32,6 @@ htmlcov/
 browser_data/
 logs/
 tmp/
+CLAUDE.md
+.claude/
+.roo/
