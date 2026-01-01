@@ -499,13 +499,18 @@ def _write_dicom(tag_list: list, image: bytes, filename, patient_info: dict | No
         ds.SOPInstanceUID = new_uid
         ds.file_meta.MediaStorageSOPInstanceUID = new_uid
 
-    jpeg_info = parse_jpeg_header(image)
-    
-    is_compressed = False
-    
+    def _is_zip_encapsulated(data: bytes) -> bool:
+        """检查数据是否已经是ZIP封装格式"""
+        if len(data) < 4:
+            return False
+        # ZIP 封装格式通常以 PK 开头 (504B)
+        return data[:2] == b'PK' or b'PK' in data[:256]
+
+    # 设置Transfer Syntax并决定是否需要封装
     if jpeg_info:
-        is_compressed = True
+        # JPEG 格式
         ds.file_meta.TransferSyntaxUID = UID('1.2.840.10008.1.2.4.50')
+        is_compressed = True
         ds.Rows = jpeg_info['height']
         ds.Columns = jpeg_info['width']
         ds.SamplesPerPixel = jpeg_info['channels']
@@ -513,33 +518,44 @@ def _write_dicom(tag_list: list, image: bytes, filename, patient_info: dict | No
         ds.BitsStored = 8
         ds.HighBit = 7
         ds.PixelRepresentation = 0
-        
+
         if jpeg_info['channels'] == 3:
             ds.PhotometricInterpretation = 'YBR_FULL_422'
-            ds.PlanarConfiguration = 0 
+            ds.PlanarConfiguration = 0
         else:
             ds.PhotometricInterpretation = 'MONOCHROME2'
 
         tags_to_delete = [
-            'RescaleIntercept', 'RescaleSlope', 'RescaleType', 
+            'RescaleIntercept', 'RescaleSlope', 'RescaleType',
             'WindowCenter', 'WindowWidth', 'WindowCenterWidthExplanation'
         ]
-        
+
         for tag_name in tags_to_delete:
             if hasattr(ds, tag_name):
                 delattr(ds, tag_name)
-        
+
         ds.WindowCenter = '128'
         ds.WindowWidth = '256'
-        
+
+    elif image.startswith(b'\xff\x4f') or b'ftyp' in image[:64]:
+        # JPEG 2000 格式 (原始数据)
+        ds.file_meta.TransferSyntaxUID = UID('1.2.840.10008.1.2.4.90')
+        is_compressed = True
+        if not hasattr(ds, 'BitsAllocated'): ds.BitsAllocated = 16
+        if not hasattr(ds, 'Rows'): ds.Rows = 512
+        if not hasattr(ds, 'Columns'): ds.Columns = 512
+
     else:
-        if image.startswith(b'\xff\x4f') or b'ftyp' in image[:64]:
-             ds.file_meta.TransferSyntaxUID = UID('1.2.840.10008.1.2.4.90')
-             is_compressed = True
-             if not hasattr(ds, 'BitsAllocated'): ds.BitsAllocated = 16
-             if not hasattr(ds, 'Rows'): ds.Rows = 512
-             if not hasattr(ds, 'Columns'): ds.Columns = 512
+        # 检查是否是已经封装的数据（服务器返回的ZIP封装）
+        if _is_zip_encapsulated(image):
+            # 数据已经是封装格式，设置正确的 Transfer Syntax
+            ds.file_meta.TransferSyntaxUID = UID('1.2.840.10008.1.2.4.90')  # JPEG 2000 Lossless
+            is_compressed = True
+            if not hasattr(ds, 'BitsAllocated'): ds.BitsAllocated = 16
+            if not hasattr(ds, 'Rows'): ds.Rows = 512
+            if not hasattr(ds, 'Columns'): ds.Columns = 512
         else:
+            # 真正的未压缩数据
             ds.file_meta.TransferSyntaxUID = UID('1.2.840.10008.1.2.1')
             is_compressed = False
             try:
@@ -552,7 +568,8 @@ def _write_dicom(tag_list: list, image: bytes, filename, patient_info: dict | No
             except:
                 pass
 
-    if is_compressed:
+    # 只有当数据不是ZIP封装格式时才封装
+    if is_compressed and not _is_zip_encapsulated(image):
         ds.PixelData = encapsulate([image])
     else:
         ds.PixelData = image
