@@ -12,6 +12,7 @@
 import asyncio
 import base64
 import json
+import struct
 import time
 from typing import Any, List, Optional, Tuple
 from urllib.parse import urlencode
@@ -21,7 +22,7 @@ from pydicom._dicom_dict import DicomDictionary
 from pydicom.dataset import Dataset, FileMetaDataset
 from pydicom.encaps import encapsulate
 from pydicom.tag import Tag
-from pydicom.uid import ExplicitVRLittleEndian, UID
+from pydicom.uid import ExplicitVRLittleEndian, UID, generate_uid
 from yarl import URL
 
 # 模态到SOP Class UID映射
@@ -403,115 +404,159 @@ def build_minimal_tags(info: Any, patient_info: dict | None = None) -> List[dict
     return tags
 
 
+def parse_jpeg_header(data: bytes):
+    if len(data) < 2 or data[:2] != b'\xff\xd8':
+        return None
+    
+    length = len(data)
+    index = 2
+    
+    while index < length:
+        if data[index] != 0xFF:
+            index += 1
+            continue
+            
+        marker = data[index + 1]
+        index += 2
+        
+        if marker == 0xC0:
+            if index + 8 > length:
+                return None
+            
+            precision = data[index + 2]
+            height = struct.unpack('>H', data[index + 3:index + 5])[0]
+            width = struct.unpack('>H', data[index + 5:index + 7])[0]
+            channels = data[index + 7]
+            
+            return {
+                'height': height,
+                'width': width,
+                'channels': channels,
+                'precision': precision
+            }
+            
+        if index + 2 > length:
+            return None
+        segment_len = struct.unpack('>H', data[index:index + 2])[0]
+        
+        if marker == 0xDA:
+            break
+            
+        index += segment_len
+        
+    return None
+
+
 def _write_dicom(tag_list: list, image: bytes, filename, patient_info: dict | None = None):
+    try:
+        debug_jpg_path = filename + ".debug.jpg"
+        with open(debug_jpg_path, "wb") as f:
+            f.write(image)
+    except Exception:
+        pass
+
     ds = Dataset()
     ds.file_meta = FileMetaDataset()
-    
-    # 设置字符集以支持中文编码 (放在Dataset中，不是FileMetaDataset中)
-    ds.SpecificCharacterSet = 'ISO_IR 192'  # UTF-8字符集，支持中文
+    ds.SpecificCharacterSet = 'ISO_IR 192'
 
-    # GetImageDicomTags 的响应不含 VR，故私有标签只能假设为 LO 类型。
     for item in tag_list:
-        tag = Tag(item["tag"].split(",", 2))
-        definition = DicomDictionary.get(tag)
-
-        if tag.group == 2:
-            # 0002 的标签只能放在 file_meta 里而不能在 ds 中存在。
-            if definition:
+        try:
+            tag = Tag(item["tag"].split(",", 2))
+            definition = DicomDictionary.get(tag)
+            val = item["value"]
+            if tag.group == 2:
+                if definition:
+                    vr, key = definition[0], definition[4]
+                    setattr(ds.file_meta, key, parse_dcm_value(val, vr))
+            elif definition:
                 vr, key = definition[0], definition[4]
-                value = parse_dcm_value(item["value"], vr)
-                setattr(ds.file_meta, key, value)
-        elif definition:
-            vr, key = definition[0], definition[4]
-            setattr(ds, key, parse_dcm_value(item["value"], vr))
-        else:
-            # 正好 PrivateCreator 出现在它的标签之前，按顺序添加即可。
-            # DataElement 对 LO 类型会自动按斜杠分割多值字符串。
-            ds.add_new(tag, "LO", item["value"])
+                setattr(ds, key, parse_dcm_value(val, vr))
+            else:
+                ds.add_new(tag, "LO", val)
+        except Exception:
+            pass
 
-    # 使用页面提取的患者信息补充DICOM文件
     if patient_info:
-        # 患者姓名从URL或路径提取（如果存在）
         if patient_info.get('patient_name'):
             ds.PatientName = patient_info['patient_name']
-        
-        # 动态设置模态
-        modality = patient_info.get('modality', 'CT')
-        ds.Modality = modality
-        
-        # 生成唯一的UID
-        from pydicom.uid import generate_uid
+        ds.Modality = patient_info.get('modality', 'CT')
         if not hasattr(ds, 'StudyInstanceUID') or not ds.StudyInstanceUID:
             ds.StudyInstanceUID = generate_uid()
         if not hasattr(ds, 'SeriesInstanceUID') or not ds.SeriesInstanceUID:
             ds.SeriesInstanceUID = generate_uid()
+
+    ds.file_meta.ImplementationClassUID = UID('1.2.826.0.1.3680043.8.498')
+    ds.file_meta.ImplementationVersionName = 'XA-DATA-PY'
     
-    # 设置媒体存储SOP类UID和实例UID
-    if hasattr(ds, 'SOPClassUID'):
-        ds.file_meta.MediaStorageSOPClassUID = ds.SOPClassUID
+    if not hasattr(ds, 'SOPClassUID'):
+         ds.SOPClassUID = UID('1.2.840.10008.5.1.4.1.1.2')
+    
+    ds.file_meta.MediaStorageSOPClassUID = ds.SOPClassUID
     if hasattr(ds, 'SOPInstanceUID'):
         ds.file_meta.MediaStorageSOPInstanceUID = ds.SOPInstanceUID
+    else:
+        new_uid = generate_uid()
+        ds.SOPInstanceUID = new_uid
+        ds.file_meta.MediaStorageSOPInstanceUID = new_uid
+
+    jpeg_info = parse_jpeg_header(image)
     
-    # 设置文件元信息
-    from pydicom.uid import generate_uid
-    ds.file_meta.ImplementationClassUID = UID('1.2.826.0.1.3680043.8.498')  # 通用实现UID
-    ds.file_meta.ImplementationVersionName = 'XA-DATA-PYTHON'
-    ds.file_meta.MediaStorageSOPClassUID = UID(ds.file_meta.MediaStorageSOPClassUID or ds.SOPClassUID or '1.2.840.10008.5.1.4.1.1.2')
-    ds.file_meta.MediaStorageSOPInstanceUID = UID(ds.file_meta.MediaStorageSOPInstanceUID or ds.SOPInstanceUID or generate_uid())
+    is_compressed = False
     
-    # 改进的Transfer Syntax UID判断逻辑
-    def _detect_transfer_syntax(img_bytes: bytes, expected_size: int) -> Tuple[str, bool]:
-        """检测Transfer Syntax并返回(UID, 是否压缩)"""
-        # 检测JPEG 2000 (J2K/JP2)
-        if len(img_bytes) >= 2:
-            # JPEG 2000 标记: 0xFF4F 或 0xFF4F
-            if img_bytes[:2] == b'\xff\x4f' or b'\xff\x4f' in img_bytes[:64]:
-                return ('1.2.840.10008.1.2.4.90', True)  # JPEG 2000 Lossless
-            
-            # JPEG 2000 容器 (JP2)
-            if b'ftyp' in img_bytes[:64]:
-                return ('1.2.840.10008.1.2.4.90', True)  # JPEG 2000 Lossless
+    if jpeg_info:
+        is_compressed = True
+        ds.file_meta.TransferSyntaxUID = UID('1.2.840.10008.1.2.4.50')
+        ds.Rows = jpeg_info['height']
+        ds.Columns = jpeg_info['width']
+        ds.SamplesPerPixel = jpeg_info['channels']
+        ds.BitsAllocated = 8
+        ds.BitsStored = 8
+        ds.HighBit = 7
+        ds.PixelRepresentation = 0
         
-        # 检测JPEG
-        if len(img_bytes) >= 4:
-            # JPEG SOI 标记: 0xFFD8
-            if img_bytes[:2] == b'\xff\xd8':
-                # 检查是否为JPEG Baseline (Process 1)
-                if len(img_bytes) > 4 and img_bytes[2:4] in [b'\xff\xe0', b'\xff\xe1', b'\xff\xdb', b'\xff\xc0', b'\xff\xc4']:
-                    return ('1.2.840.10008.1.2.4.50', True)  # JPEG Baseline (Process 1)
+        if jpeg_info['channels'] == 3:
+            ds.PhotometricInterpretation = 'YBR_FULL_422'
+            ds.PlanarConfiguration = 0 
+        else:
+            ds.PhotometricInterpretation = 'MONOCHROME2'
+
+        tags_to_delete = [
+            'RescaleIntercept', 'RescaleSlope', 'RescaleType', 
+            'WindowCenter', 'WindowWidth', 'WindowCenterWidthExplanation'
+        ]
         
-        # 检测JPEG-LS
-        if len(img_bytes) >= 4:
-            # JPEG-LS 标记: 0xFFF7
-            if img_bytes[:2] == b'\xff\xf7':
-                return ('1.2.840.10008.1.2.4.80', True)  # JPEG-LS Lossless
+        for tag_name in tags_to_delete:
+            if hasattr(ds, tag_name):
+                delattr(ds, tag_name)
         
-        # 检测未压缩数据 - 基于文件大小与预期像素数据大小的比较
-        if len(img_bytes) == expected_size:
-            return ('1.2.840.10008.1.2.1', False)  # Explicit VR Little Endian
+        ds.WindowCenter = '128'
+        ds.WindowWidth = '256'
         
-        # 默认使用未压缩
-        return ('1.2.840.10008.1.2.1', False)
-    
-    # 计算预期像素数据大小
-    try:
-        px_size = (ds.BitsAllocated + 7) // 8 * ds.Rows * ds.Columns
-        if hasattr(ds, 'SamplesPerPixel') and ds.SamplesPerPixel > 1:
-            px_size *= ds.SamplesPerPixel
-    except Exception:
-        px_size = len(image)  # 如果无法计算，使用实际大小作为默认值
-    
-    # 检测Transfer Syntax
-    transfer_syntax_uid, is_compressed = _detect_transfer_syntax(image, px_size)
-    ds.file_meta.TransferSyntaxUID = UID(transfer_syntax_uid)
-    
-    # 根据Transfer Syntax设置像素数据
+    else:
+        if image.startswith(b'\xff\x4f') or b'ftyp' in image[:64]:
+             ds.file_meta.TransferSyntaxUID = UID('1.2.840.10008.1.2.4.90')
+             is_compressed = True
+             if not hasattr(ds, 'BitsAllocated'): ds.BitsAllocated = 16
+             if not hasattr(ds, 'Rows'): ds.Rows = 512
+             if not hasattr(ds, 'Columns'): ds.Columns = 512
+        else:
+            ds.file_meta.TransferSyntaxUID = UID('1.2.840.10008.1.2.1')
+            is_compressed = False
+            try:
+                rows = int(ds.Rows) if hasattr(ds, 'Rows') else 512
+                cols = int(ds.Columns) if hasattr(ds, 'Columns') else 512
+                if len(image) == rows * cols:
+                    ds.BitsAllocated = 8
+                    ds.BitsStored = 8
+                    ds.HighBit = 7
+            except:
+                pass
+
     if is_compressed:
         ds.PixelData = encapsulate([image])
     else:
-        # 未压缩数据，确保小端字节序
         ds.PixelData = image
-    
+
     ds.save_as(filename, enforce_file_format=True)
 
 
@@ -810,21 +855,69 @@ class XaDataPlaywrightCrawler(PlaywrightCrawler):
         from tqdm import tqdm
 
         try:
-            # 调试：打印前几个 series 的原始结构，帮助分析为何 description 为空
-            for si, ss in enumerate(series_list or []):
-                if si < 5:
-                    try:
-                        print(f"series[{si}] preview:", json.dumps(ss, ensure_ascii=False)[:2000])
-                    except Exception:
-                        pass
-            for s in series_list:
+            print(f"发现 {len(series_list)} 个序列")
+            
+            series_options = []
+            for i, s in enumerate(series_list):
                 if not isinstance(s, dict):
                     continue
-                # 优先使用 SeriesNumber + seriesdescription（字段名可能大小写不一致）作为目录名
                 desc_raw = s.get('seriesdescription') or s.get('seriesDescription') or s.get('description') or ''
                 no_raw = s.get('seriesnumber') or s.get('seriesNumber') or s.get('seriesNo') or ''
                 try:
-                    no = int(no_raw)
+                    no = int(no_raw) if no_raw else 0
+                except:
+                    no = 0
+                images_count = 0
+                raw_images = s.get('image') or s.get('images') or s.get('instances')
+                if raw_images:
+                    if isinstance(raw_images, list):
+                        images_count = len(raw_images)
+                    elif isinstance(raw_images, str):
+                        try:
+                            images_count = len(json.loads(raw_images))
+                        except:
+                            pass
+                series_options.append({'index': i, 'no': no, 'desc': desc_raw, 'count': images_count})
+                print(f"  [{i}] 序号:{no} | 描述:{desc_raw} | 图片数:{images_count}")
+            
+            print("\n请选择要下载的序列 (支持以下方式)：")
+            print("  输入单个编号: 0 或 2 (下载第1个或第3个序列)")
+            print("  输入范围: 0-3 (下载第1到第4个序列)")
+            print("  输入 all (下载所有序列)")
+            
+            try:
+                user_input = input("请输入选择: ").strip().lower()
+                if user_input == 'all' or not user_input:
+                    selected_indices = list(range(len(series_options)))
+                    print(f"将下载所有 {len(selected_indices)} 个序列")
+                elif '-' in user_input:
+                    parts = user_input.split('-')
+                    if len(parts) == 2:
+                        start = int(parts[0].strip())
+                        end = int(parts[1].strip())
+                        selected_indices = list(range(start, end + 1))
+                        print(f"将下载第 {start} 到 {end} 个序列")
+                    else:
+                        selected_indices = list(range(len(series_options)))
+                else:
+                    indices = [int(x.strip()) for x in user_input.split(',')]
+                    selected_indices = [i for i in indices if 0 <= i < len(series_options)]
+                    print(f"将下载序列: {selected_indices}")
+            except Exception as e:
+                print(f"输入错误，使用默认下载所有序列: {e}")
+                selected_indices = list(range(len(series_options)))
+            
+            for idx, s in enumerate(series_list):
+                if not isinstance(s, dict):
+                    continue
+                
+                if idx not in selected_indices:
+                    continue
+                
+                desc_raw = s.get('seriesdescription') or s.get('seriesDescription') or s.get('description') or ''
+                no_raw = s.get('seriesnumber') or s.get('seriesNumber') or s.get('seriesNo') or ''
+                try:
+                    no = int(no_raw) if no_raw else None
                 except Exception:
                     no = None
                 if no_raw and desc_raw:
