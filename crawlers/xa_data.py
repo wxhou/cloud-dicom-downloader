@@ -1,7 +1,7 @@
 """
-专门为 yxy.xa-data.cn（xa-data）实现的爬虫。
+专门为 yxy.xa-data.cn（xa-data）实现的下载器。
 
-该站点的查看器和 tdcloud 类似但布局不同，故实现一个更鲁棒的 Playwright 爬虫：
+该站点的查看器和 tdcloud 类似但布局不同，故实现一个更鲁棒的 Playwright 下载器：
 - 打开初始页面，尝试自动点击查看影像按钮或等待用户手动操作
 - 监听页面发出的 XHR 请求以捕获 GetImageSet / LoadImageCacheKey
 - 在新标签页中提取所需变量（studyId/accession/examuid/LOAD_IMAGE_CACHE_KEY）
@@ -583,7 +583,7 @@ def _write_dicom(tag_list: list, image: bytes, filename, patient_info: dict | No
             extracted_data = _extract_from_zip(image)
             
             # 检查提取的数据是否是完整的DICOM文件
-            if len(extracted_data) > 132 and extracted_data[128:132] == b'DICM':
+            if extracted_data and len(extracted_data) > 132 and extracted_data[128:132] == b'DICM':
                 # 这是一个完整的DICOM文件，直接保存它
                 print(f"  保存从ZIP提取的完整DICOM文件")
                 with open(filename, 'wb') as f:
@@ -591,7 +591,7 @@ def _write_dicom(tag_list: list, image: bytes, filename, patient_info: dict | No
                 return
             
             # 否则按照之前的逻辑处理
-            if extracted_data.startswith(b'\xff\x4f') or b'ftyp' in extracted_data[:64]:
+            if extracted_data and (extracted_data.startswith(b'\xff\x4f') or b'ftyp' in extracted_data[:64]):
                 # JPEG 2000 数据
                 ds.file_meta.TransferSyntaxUID = UID('1.2.840.10008.1.2.4.90')  # JPEG 2000 Lossless
                 is_compressed = True
@@ -948,6 +948,7 @@ class XaDataPlaywrightCrawler(PlaywrightCrawler):
             
             print("\n请选择要下载的序列 (支持以下方式)：")
             print("  输入单个编号: 0 或 2 (下载第1个或第3个序列)")
+            print("  输入逗号分隔: 1,3,5 (下载第2、4、6个序列)")
             print("  输入范围: 0-3 (下载第1到第4个序列)")
             print("  输入 all (下载所有序列)")
             
@@ -1036,11 +1037,19 @@ class XaDataPlaywrightCrawler(PlaywrightCrawler):
             except Exception:
                 pass
 
+        # 下载完成后自动关闭浏览器
         try:
-            print('下载完成。请在浏览器中关闭页面以结束进程。')
-            await (new_page or page).wait_for_event('close')
-        except Exception:
-            pass
+            print('正在关闭浏览器...')
+            if new_page:
+                await new_page.close()
+                print('已关闭新页面')
+            if page and not page.is_closed():
+                await page.close()
+                print('已关闭主页面')
+        except Exception as e:
+            print(f'关闭浏览器时出现错误: {e}')
+
+        print('✅ DICOM文件下载完成！')
 
 
 async def run(url, *args):

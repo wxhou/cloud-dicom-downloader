@@ -1,5 +1,5 @@
 """
-下载 szjudianyun.com 上面的云影像，爬虫流程见：
+下载 szjudianyun.com 上面的云影像，下载器流程见：
 https://blog.kaciras.com/article/39/download-raw-dicom-from-cloud-ct-viewer
 """
 import json

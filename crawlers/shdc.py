@@ -17,7 +17,7 @@ from crawlers._utils import new_http_client, pathify, SeriesDirectory, suggest_s
 TABLE_62 = string.digits + string.ascii_lowercase + string.ascii_uppercase
 
 # 页面代码里找到一个 AES 加密算出来的，是个固定值。
-# 但也可能随着网站更新变化，如果改变频繁可能需要换成跑浏览器爬虫的方案。
+# 但也可能随着网站更新变化，如果改变频繁可能需要换成跑浏览器下载器的方案。
 KEY = "5fbcVzmBJNUsw53#"
 
 # 根据逆向找到的，随机 6 位 Base62。

@@ -38,51 +38,51 @@ async def main():
 
 	if host.endswith(".medicalimagecloud.com"):
 		module_ = hinacom
-		logger.info("选择海纳康医学影像云爬虫模块")
+		logger.info("选择海纳康医学影像云下载器模块")
 	elif host == "mdmis.cq12320.cn":
 		module_ = cq12320
-		logger.info("选择重庆12320爬虫模块")
+		logger.info("选择重庆12320下载器模块")
 	elif host == "qr.szjudianyun.com":
 		module_ = szjudianyun
-		logger.info("选择深圳聚点云爬虫模块")
+		logger.info("选择深圳聚点云下载器模块")
 	elif host == "ylyyx.shdc.org.cn":
 		module_ = shdc
-		logger.info("选择上海医学影像中心爬虫模块")
+		logger.info("选择上海医学影像中心下载器模块")
 	elif host == "zscloud.zs-hospital.sh.cn":
 		module_ = zscloud
-		logger.info("选择中山医院爬虫模块")
+		logger.info("选择中山医院下载器模块")
 	elif host == "app.ftimage.cn" or host == "yyx.ftimage.cn":
 		module_ = ftimage
-		logger.info("选择飞图影像爬虫模块")
+		logger.info("选择飞图影像下载器模块")
 	elif host == "m.yzhcloud.com":
 		module_ = yzhcloud
-		logger.info("选择远程影像云爬虫模块")
+		logger.info("选择远程影像云下载器模块")
 	elif host == "ss.mtywcloud.com":
 		module_ = mtywcloud
-		logger.info("选择万网云爬虫模块")
+		logger.info("选择万网云下载器模块")
 	elif host == "work.sugh.net":
 		module_ = sugh
-		logger.info("选择上航院爬虫模块")
+		logger.info("选择上航院下载器模块")
 	elif host == "cloudpacs.jdyfy.com":
 		module_ = jdyfy
-		logger.info("选择金蝶医疗云爬虫模块")
+		logger.info("选择金蝶医疗云下载器模块")
 	elif host == "tdcloudjp.fmmu.edu.cn":
 		module_ = tdcloud
-		logger.info("选择第四军医大学云爬虫模块")
+		logger.info("选择第四军医大学云下载器模块")
 	elif host == "yxy.xa-data.cn":
 		module_ = xa_data
-		logger.info("选择西安数据爬虫模块")
+		logger.info("选择西安数据下载器模块")
 	else:
 		error_msg = f"不支持的网站: {host}, 详情见 README.md"
 		logger.error(error_msg)
 		return print(error_msg)
 
 	try:
-		logger.info(f"开始执行爬虫模块: {module_.__name__}")
+		logger.info(f"开始执行下载器模块: {module_.__name__}")
 		await module_.run(url_arg, *extra_args)
-		logger.info("爬虫任务执行完成")
+		logger.info("下载器任务执行完成")
 	except Exception as e:
-		logger.error(f"爬虫模块执行失败: {str(e)}", exc_info=True)
+		logger.error(f"下载器模块执行失败: {str(e)}", exc_info=True)
 		raise
 
 

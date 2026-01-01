@@ -59,7 +59,7 @@ async def wait_text(context: Page | Frame | ElementHandle, selector: str) -> Opt
 
 
 class PlaywrightCrawler:
-	"""本项目的爬虫都比较简单，有固定的模式，所以写个抽象类来统一下代码"""
+	"""本项目的下载器都比较简单，有固定的模式，所以写个抽象类来统一下代码"""
 
 	_autoclose_waiter = asyncio.Event()
 	_context: Optional[BrowserContext] = None
@@ -86,14 +86,14 @@ class PlaywrightCrawler:
 		pass
 
 	async def run(self, context: BrowserContext):
-		logger.info("启动爬虫执行")
+		logger.info("启动下载器执行")
 		self._context = context
 		context.on("page", self._prepare_page)
 		context.on("response", self._on_response)
 		try:
 			return await self._do_run(context)
 		finally:
-			logger.info("爬虫执行完成")
+			logger.info("下载器执行完成")
 
 
 async def run_with_browser(crawler: PlaywrightCrawler, **kwargs):
@@ -108,7 +108,7 @@ async def run_with_browser(crawler: PlaywrightCrawler, **kwargs):
 	"""
 	global _browser, _playwright, _driver_instance
 
-	logger.info(f"使用浏览器执行爬虫: {crawler.__class__.__name__}")
+	logger.info(f"使用浏览器执行下载器: {crawler.__class__.__name__}")
 	
 	if not _driver_instance:
 		logger.info("初始化Playwright实例")

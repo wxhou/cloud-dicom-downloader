@@ -130,8 +130,8 @@ def log_dicom_operation(operation, file_path, success=True, error=None):
         logger.error(f"DICOM操作失败 - {operation}: {file_path}, 错误: {error}")
 
 def log_crawler_event(crawler_name, event, details=None):
-    """记录爬虫事件"""
+    """记录下载器事件"""
     if details:
-        logger.info(f"爬虫 {crawler_name} - {event}: {details}")
+        logger.info(f"下载器 {crawler_name} - {event}: {details}")
     else:
-        logger.info(f"爬虫 {crawler_name} - {event}")
+        logger.info(f"下载器 {crawler_name} - {event}")
